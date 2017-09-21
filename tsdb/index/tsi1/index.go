@@ -23,8 +23,13 @@ import (
 	"github.com/uber-go/zap"
 )
 
-// IndexName is the name of the index.
-const IndexName = "tsi1"
+const (
+	// IndexName is the name of the index.
+	IndexName = "tsi1"
+
+	// Version is the current version of the TSI index.
+	Version = 1
+)
 
 // Default compaction thresholds.
 const (
@@ -95,6 +100,9 @@ type Index struct {
 	CompactionMonitorInterval time.Duration
 
 	logger zap.Logger
+
+	// Index's version.
+	version int
 }
 
 // NewIndex returns a new instance of Index.
@@ -106,8 +114,24 @@ func NewIndex() *Index {
 		MaxLogFileSize:    DefaultMaxLogFileSize,
 		CompactionEnabled: true,
 
-		logger: zap.New(zap.NullEncoder()),
+		logger:  zap.New(zap.NullEncoder()),
+		version: Version,
 	}
+}
+
+// An IncompatibleVersionError is returned when attempting to read from an
+// incompatible tsi1 manifest file.
+type IncompatibleVersionError error
+
+// ErrIncompatibleVersion returns an IncompatibleVersionError if the provided
+// manifest is incompatible with the current tsi1 package.
+func ErrIncompatibleVersion(m *Manifest) IncompatibleVersionError {
+	// If we don't have an explicit version in the manifest file then we know
+	// it's not compatible with the latest tsi1 Index.
+	if m.Version != Version {
+		return IncompatibleVersionError(errors.New("incompatible tsi1 index MANIFEST"))
+	}
+	return nil
 }
 
 func (i *Index) Type() string { return IndexName }
@@ -131,6 +155,11 @@ func (i *Index) Open() error {
 	if os.IsNotExist(err) {
 		m = NewManifest()
 	} else if err != nil {
+		return err
+	}
+
+	// Check to see if the MANIFEST file is compatible with the current Index.
+	if err := ErrIncompatibleVersion(m); err != nil {
 		return err
 	}
 
@@ -287,8 +316,9 @@ func (i *Index) ManifestPath() string {
 // Manifest returns a manifest for the index.
 func (i *Index) Manifest() *Manifest {
 	m := &Manifest{
-		Levels: i.levels,
-		Files:  make([]string, len(i.fileSet.files)),
+		Levels:  i.levels,
+		Files:   make([]string, len(i.fileSet.files)),
+		Version: i.version,
 	}
 
 	for j, f := range i.fileSet.files {
@@ -1221,12 +1251,16 @@ func ParseFilename(name string) (level, id int) {
 type Manifest struct {
 	Levels []CompactionLevel `json:"levels,omitempty"`
 	Files  []string          `json:"files,omitempty"`
+
+	// Version should be updated whenever the TSI format has changed.
+	Version int `json:"version,omitempty"`
 }
 
 // NewManifest returns a new instance of Manifest with default compaction levels.
 func NewManifest() *Manifest {
 	m := &Manifest{
-		Levels: make([]CompactionLevel, len(DefaultCompactionLevels)),
+		Levels:  make([]CompactionLevel, len(DefaultCompactionLevels)),
+		Version: Version,
 	}
 	copy(m.Levels, DefaultCompactionLevels[:])
 	return m
